@@ -1,0 +1,160 @@
+/*
+ * ==============================================================================
+ * ENUNCIADO DEL EJERCICIO:
+ * Modify the binary counter exercise from lab 3 to use timers, each 
+ * sequence should change without buttons and in a 1.5 second interval. 
+ * Then add a new functionality, when a button is pressed change the time 
+ * interval to 3 seconds. 
+ * ==============================================================================
+ */
+
+#include <stdint.h>
+#include <stdbool.h>
+#include "inc/hw_ints.h"
+#include "inc/hw_memmap.h"
+#include "inc/hw_types.h"
+#include "inc/hw_gpio.h"
+#include "driverlib/sysctl.h"
+#include "driverlib/gpio.h"
+#include "driverlib/timer.h"
+#include "driverlib/interrupt.h"
+
+// --- VARIABLES GLOBALES ---
+uint32_t tiempo;        // Guarda los "ticks" de reloj para 1 segundo.
+volatile uint8_t c = 0; // Contador binario (0-15). 
+                        // Es 'volatile' porque se modifica en la interrupción.
+bool boton = false;     // Bandera de estado para el botón.
+
+// --- HANDLER: Lógica del Contador Binario ---
+void Timer0A_Handler(void)
+{
+    // Limpiar bandera de interrupción del timer para evitar bucle infinito.
+    TimerIntClear(TIMER0_BASE, TIMER_TIMA_TIMEOUT);
+
+    // Incrementar contador y resetear al llegar a 16 (solo tenemos 4 bits / LEDs)
+    c++;
+    if(c > 15) c = 0;
+
+    // Escribir en los LEDs representando bits (Máscara AND y Operador Ternario):
+    // Bit 0 (LSB): PN1 (D1) -> (c & 0x01) evalúa si el bit 0 es '1'
+    GPIOPinWrite(GPIO_PORTN_BASE, GPIO_PIN_1, (c & 0x01) ? GPIO_PIN_1 : 0);
+    
+    // Bit 1:       PN0 (D2) -> (c & 0x02) evalúa si el bit 1 es '1'
+    GPIOPinWrite(GPIO_PORTN_BASE, GPIO_PIN_0, (c & 0x02) ? GPIO_PIN_0 : 0);
+    
+    // Bit 2:       PF4 (D3) -> (c & 0x04) evalúa si el bit 2 es '1'
+    GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_4, (c & 0x04) ? GPIO_PIN_4 : 0);
+    
+    // Bit 3 (MSB): PF0 (D4) -> (c & 0x08) evalúa si el bit 3 es '1'
+    GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_0, (c & 0x08) ? GPIO_PIN_0 : 0);
+}
+
+int main(void)
+{
+    // 1. Reloj a 120 MHz
+    tiempo = SysCtlClockFreqSet((SYSCTL_XTAL_25MHZ | SYSCTL_OSC_MAIN | 
+                                 SYSCTL_USE_PLL | SYSCTL_CFG_VCO_240), 120000000);
+
+    // 2. Configurar LEDs (Puertos N y F)
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_GPION);
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOF);
+    while(!SysCtlPeripheralReady(SYSCTL_PERIPH_GPION));
+    while(!SysCtlPeripheralReady(SYSCTL_PERIPH_GPIOF));
+    
+    // Desbloqueo de PF0 (Necesario para D4)
+    // El pin PF0 está bloqueado por hardware (suele usarse para NMI).
+    // Hay que escribir una clave especial para poder usarlo como salida normal.
+    HWREG(GPIO_PORTF_BASE + GPIO_O_LOCK) = GPIO_LOCK_KEY;
+    HWREG(GPIO_PORTF_BASE + GPIO_O_CR) |= 0x01;
+    HWREG(GPIO_PORTF_BASE + GPIO_O_LOCK) = 0;
+
+    GPIOPinTypeGPIOOutput(GPIO_PORTN_BASE, GPIO_PIN_0 | GPIO_PIN_1);
+    GPIOPinTypeGPIOOutput(GPIO_PORTF_BASE, GPIO_PIN_0 | GPIO_PIN_4);
+
+    // 3. Configurar Botón USR_SW2 (PJ1)
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOJ);
+    while(!SysCtlPeripheralReady(SYSCTL_PERIPH_GPIOJ));
+    
+    GPIOPinTypeGPIOInput(GPIO_PORTJ_BASE, GPIO_PIN_1);
+    GPIOPadConfigSet(GPIO_PORTJ_BASE, GPIO_PIN_1, GPIO_STRENGTH_2MA, GPIO_PIN_TYPE_STD_WPU);
+
+    // 4. Configurar Timer 0 a 1.5 Segundos inicialmente
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_TIMER0);
+    TimerConfigure(TIMER0_BASE, TIMER_CFG_PERIODIC);
+    
+    // Cálculo para 1.5s = tiempo * 1.5 -> (tiempo * 3) / 2
+    // Se hace con enteros para evitar cálculos flotantes en el microcontrolador.
+    TimerLoadSet(TIMER0_BASE, TIMER_A, ((tiempo * 3) / 2) - 1);
+
+    // 5. Interrupciones
+    TimerIntEnable(TIMER0_BASE, TIMER_TIMA_TIMEOUT);
+    IntEnable(INT_TIMER0A); 
+    IntMasterEnable();      
+    TimerEnable(TIMER0_BASE, TIMER_A);
+
+    // Bucle principal de monitoreo
+    while(1)
+    {
+        // Lógica del Botón para cambiar intervalo 
+        // 0 significa que el botón está siendo presionado.
+        if(GPIOPinRead(GPIO_PORTJ_BASE, GPIO_PIN_1) == 0) 
+        {
+            if(!boton) // Si no estaba presionado antes...
+            {
+                // Cambiar la velocidad del timer a 3 segundos 
+                TimerLoadSet(TIMER0_BASE, TIMER_A, (tiempo * 3) - 1);
+                boton = true; // Actualiza el estado
+            }
+        }
+        else // Si el botón está suelto (lee un '1')
+        {
+            if(boton) // Si estaba presionado y lo soltaste...
+            {
+                // Volver a la velocidad normal de 1.5 segundos
+                TimerLoadSet(TIMER0_BASE, TIMER_A, ((tiempo * 3) / 2) - 1);
+                boton = false; // Actualiza el estado
+            }
+        }
+    }
+}
+
+/*
+ * ==============================================================================
+ * 2. RESUMEN POR SECCIONES
+ * ==============================================================================
+ * - SECCIÓN 1 (Reloj): Se establece el reloj a 120 MHz.
+ * - SECCIÓN 2 (LEDs y Desbloqueo): Se habilitan los puertos N y F. Se incluye 
+ * una rutina crítica usando 'HWREG' para desbloquear el pin PF0, permitiendo 
+ * usar los 4 LEDs completos.
+ * - SECCIÓN 3 (Botón): Se habilita el pin PJ1 como entrada con Pull-Up (WPU).
+ * - SECCIÓN 4 (Timer Inicial): Se ajusta el Timer a 1.5 segundos  usando una
+ * operación matemática entera.
+ * - SECCIÓN 5 (Bucle/Polling): Verifica el botón constantemente. Mientras se 
+ * presione, el Timer se recalcula a 3 segundos. Al soltarlo, vuelve a 1.5s.
+ * ==============================================================================
+ * 3. FUNCIONAMIENTO GENERAL
+ * ==============================================================================
+ * El programa actúa como un contador binario automatizado de 4 bits. Cada vez 
+ * que el Timer finaliza su cuenta (cada 1.5s por defecto), la variable 'c' 
+ * aumenta y su valor decimal (0 al 15) se descompone en bits para encender los 
+ * LEDs correspondientes en la placa. Paralelamente, el bucle principal lee un 
+ * interruptor; si el usuario lo mantiene presionado, la cadencia de la 
+ * interrupción se ralentiza a 3 segundos, desacelerando el conteo visual. Al 
+ * soltar el botón, el sistema retoma su velocidad original.
+ * ==============================================================================
+ * 4. LO MÁS IMPORTANTE DEL CÓDIGO
+ * ==============================================================================
+ * A) Desbloqueo de PF0: La línea 'HWREG(GPIO_PORTF_BASE + GPIO_O_LOCK) = ...' 
+ * es obligatoria en las placas Tiva si quieres usar el PF0. Por defecto, este 
+ * pin está protegido por hardware. Si omites esas tres líneas, el LED D4 jamás 
+ * encenderá.
+ * B) Máscaras de Bits y Operador Ternario: La instrucción `(c & 0x01) ? ...` 
+ * es una forma elegante de leer un solo bit específico de la variable 'c' sin 
+ * afectar a los demás, evitando el uso de enormes bloques de 'if/else' o 
+ * 'switch/case'.
+ * C) Evitar flotantes en el Timer: Al necesitar "1.5 segundos", multiplicar por 
+ * 1.5 implicaría matemáticas de coma flotante, lo cual es "pesado" para el 
+ * microcontrolador. Usar `(tiempo * 3) / 2` logra exactamente el mismo 
+ * resultado matemático, pero usando aritmética entera, que es rapidísima.
+ * ==============================================================================
+ */

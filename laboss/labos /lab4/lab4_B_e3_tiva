@@ -1,0 +1,165 @@
+/*
+ * ==============================================================================
+ * ENUNCIADO DEL EJERCICIO:
+ * Modify the previous excercise to change the interval to 1 and 0,5 seconds 
+ * when a user switch is pressed[cite: 171].
+ * (Modificar el ejercicio anterior para cambiar el intervalo a 1 y 0.5 segundos 
+ * cuando se presione un interruptor de usuario, aquí con un par de velocidades extra).
+ * ==============================================================================
+ */
+
+#include <stdint.h>
+#include <stdbool.h>
+#include "inc/hw_ints.h"
+#include "inc/hw_memmap.h"
+#include "driverlib/sysctl.h"
+#include "driverlib/gpio.h"
+#include "driverlib/timer.h"
+#include "driverlib/interrupt.h"
+
+// Variables globales
+int tiempo;
+volatile int s = 0; // Se usa en la interrupción, por eso es volatile. 
+                    // Cuenta los "sub-pasos" (ticks) para cambiar los LEDs.
+int v = 0;          // Controla la velocidad actual (1 a 4).
+
+// Bandera para evitar que un solo toque largo cuente 
+// como múltiples presiones (detección de flanco/antirrebote).
+bool botonPresionado = false; 
+
+// --- HANDLER: Solo para los LEDs ---
+// Esta interrupción se ejecuta a alta velocidad.
+void Timer0A_Handler(void)
+{
+    // Limpiar interrupción del timer[cite: 142].
+    TimerIntClear(TIMER0_BASE, TIMER_TIMA_TIMEOUT);
+    
+    s++;
+    if(s > 400) s = 1; // Un ciclo completo de los 4 LEDs dura 400 "latidos".
+
+    // Apagar LEDs antes de cambiar para evitar superposición visual.
+    GPIOPinWrite(GPIO_PORTN_BASE, (GPIO_PIN_0 | GPIO_PIN_1), 0);
+    GPIOPinWrite(GPIO_PORTF_BASE, (GPIO_PIN_0 | GPIO_PIN_4), 0);
+    
+    // Divide los 400 latidos en 4 bloques de 100 latidos cada uno.
+    // Cada bloque enciende un LED diferente.
+    if(s > 0 && s <= 100)        GPIOPinWrite(GPIO_PORTN_BASE, GPIO_PIN_1, GPIO_PIN_1); 
+    else if(s > 100 && s <= 200) GPIOPinWrite(GPIO_PORTN_BASE, GPIO_PIN_0, GPIO_PIN_0); 
+    else if(s > 200 && s <= 300) GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_4, GPIO_PIN_4); 
+    else if(s > 300 && s <= 400) GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_0, GPIO_PIN_0); 
+}
+
+int main(void)
+{
+    // Configurar reloj a 120 MHz y guardar en 'tiempo'.
+    tiempo = SysCtlClockFreqSet((SYSCTL_XTAL_25MHZ | SYSCTL_OSC_MAIN | 
+                                 SYSCTL_USE_PLL | SYSCTL_CFG_VCO_240), 120000000);
+
+    // LEDs (Puertos N y F)
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_GPION);
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOF);
+    GPIOPinTypeGPIOOutput(GPIO_PORTN_BASE, GPIO_PIN_0 | GPIO_PIN_1);
+    GPIOPinTypeGPIOOutput(GPIO_PORTF_BASE, GPIO_PIN_0 | GPIO_PIN_4);
+
+    // --- CONFIGURACIÓN DEL SEGUNDO BOTÓN (PJ1) ---
+    // Habilitar el reloj para el Puerto J.
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOJ);
+    while(!SysCtlPeripheralReady(SYSCTL_PERIPH_GPIOJ));
+    
+    // USR_SW2 está en el PIN 1 del Puerto J. Se configura como entrada.
+    GPIOPinTypeGPIOInput(GPIO_PORTJ_BASE, GPIO_PIN_1);
+    
+    // Configurar resistencia Pull-Up interna (WPU). 
+    // Mantiene el pin en '1' lógico hasta que se presione el botón (baja a '0').
+    GPIOPadConfigSet(GPIO_PORTJ_BASE, GPIO_PIN_1, GPIO_STRENGTH_2MA, GPIO_PIN_TYPE_STD_WPU);
+
+    // Timer
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_TIMER0);
+    TimerConfigure(TIMER0_BASE, TIMER_CFG_PERIODIC);
+    
+    // Carga inicial del timer. 'tiempo/50' hace que la interrupción 
+    // ocurra 50 veces por segundo. Como cada LED dura 100 pasos,
+    // (100 / 50) = 2 segundos por cada LED.
+    TimerLoadSet(TIMER0_BASE, TIMER_A, (tiempo / 50) - 1); 
+
+    TimerIntEnable(TIMER0_BASE, TIMER_TIMA_TIMEOUT);
+    IntEnable(INT_TIMER0A); 
+    IntMasterEnable();      
+    TimerEnable(TIMER0_BASE, TIMER_A);
+
+    // Bucle principal: Aquí se lee el botón constantemente (Polling).
+    while(1)
+    {
+        // Al usar Pull-up, un '0' significa que el botón está siendo presionado.
+        if(GPIOPinRead(GPIO_PORTJ_BASE, GPIO_PIN_1) == 0) 
+        {
+            // Solo entra si NO estaba presionado antes.
+            if(!botonPresionado) 
+            {
+                v++;                // Cambia al siguiente modo de velocidad.
+                if(v > 4) v = 1;    // Vuelve al modo 1 si pasa del 4.
+
+                // Actualizar velocidad recargando el Timer "al vuelo"[cite: 140].
+                // Cambiamos la frecuencia con la que ocurren los "latidos".
+                if (v == 1)      TimerLoadSet(TIMER0_BASE, TIMER_A, (tiempo / 100) - 1); // 1 seg
+                else if (v == 2) TimerLoadSet(TIMER0_BASE, TIMER_A, (tiempo / 200) - 1); // 0.5 seg
+                else if (v == 3) TimerLoadSet(TIMER0_BASE, TIMER_A, (tiempo / 400) - 1); // 0.25 seg
+                else if (v == 4) TimerLoadSet(TIMER0_BASE, TIMER_A, (tiempo / 50) - 1);  // 2 seg
+                
+                // Marca el botón como presionado para no repetir la acción
+                // hasta que lo sueltes.
+                botonPresionado = true; 
+            }
+        }
+        else
+        {
+            // Si el botón se suelta (leemos un '1'), reseteamos la bandera
+            // para permitir una nueva lectura en el futuro.
+            botonPresionado = false; 
+        }
+    }
+}
+
+/*
+ * ==============================================================================
+ * 2. RESUMEN POR SECCIONES
+ * ==============================================================================
+ * - SECCIÓN 1 (Configuración Básica): Reloj a 120 MHz, LEDs configurados
+ * como salidas (Puertos N y F).
+ * - SECCIÓN 2 (Botón de Usuario): Se habilita el Puerto J, Pin 1 como entrada 
+ * con resistencia "Pull-Up". Esto es crucial para leer el botón.
+ * - SECCIÓN 3 (Timer Inicial): Se ajusta el Timer a una velocidad inicial lenta 
+ * (tiempo / 50), habilitando sus interrupciones correspondientes.
+ * - SECCIÓN 4 (Bucle while(1) - Polling): El microcontrolador vigila el estado 
+ * del botón repetidamente. Si lo presionas, cambia la variable 'v' y recarga 
+ * el Timer con un nuevo valor, modificando su velocidad en tiempo real.
+ * - SECCIÓN 5 (Rutina de Interrupción): Un contador 's' sube hasta 400. 
+ * Dependiendo del rango en el que esté 's' (1-100, 101-200, etc.), se enciende 
+ * un LED distinto.
+ * ==============================================================================
+ * 3. FUNCIONAMIENTO GENERAL
+ * ==============================================================================
+ * Este programa mezcla dos paradigmas: Polling (monitoreo continuo) e 
+ * Interrupciones. El bucle infinito está exclusivamente dedicado a vigilar si 
+ * presionas el botón PJ1. Al presionarlo, recalcula el valor del Timer para 
+ * acelerarlo o frenarlo. Mientras tanto, en un plano paralelo, el Timer está 
+ * disparando interrupciones rapidísimas que van sumando a la variable 's'. Al 
+ * modificar la velocidad del Timer desde el bucle principal, haces que 's' 
+ * llegue más rápido o más lento a sus puntos de quiebre (100, 200...), lo que 
+ * se traduce visualmente en LEDs que cambian más rápido o más lento.
+ * ==============================================================================
+ * 4. LO MÁS IMPORTANTE DEL CÓDIGO
+ * ==============================================================================
+ * A) La Lógica Anti-rebote (Debouncing lógico): El uso de la bandera 
+ * `botonPresionado` evita que mantener el botón apretado registre múltiples 
+ * pulsaciones. Solo te permite cambiar la velocidad otra vez cuando el 
+ * programa detecta que has soltado el botón (estado `else`).
+ * B) Modificar el Timer "al vuelo": La función `TimerLoadSet` se usa dentro del 
+ * bucle [cite: 140] para sobreescribir el límite del Timer sin necesidad de 
+ * apagarlo y prenderlo. 
+ * C) El Pull-Up (`GPIO_PIN_TYPE_STD_WPU`): Obliga al pin a leer un '1' cuando 
+ * no tocas nada. Así, cuando el circuito se cierra por el botón hacia tierra, 
+ * el programa lee de forma segura un '0', evitando voltajes "flotantes" que 
+ * causen lecturas falsas.
+ * ==============================================================================
+ */

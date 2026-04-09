@@ -1,0 +1,160 @@
+/*
+ * ==============================================================================
+ * ENUNCIADO DEL EJERCICIO:
+ * Make a decimal sequence with the user leds that changes each 2 seconds 
+ *[cite: 170].
+ * (Hacer una secuencia decimal con los LEDs de usuario que cambie cada 2 
+ * segundos).
+ * ==============================================================================
+ */
+
+#include <stdint.h>
+#include <stdbool.h>
+#include "inc/hw_ints.h"
+#include "inc/hw_memmap.h"
+#include "driverlib/sysctl.h"
+#include "driverlib/gpio.h"
+#include "driverlib/timer.h"
+#include "driverlib/interrupt.h"
+
+int tiempo;             // Variable para almacenar los "ticks" 
+                        // equivalentes a 1 segundo.
+
+volatile int s = 0;     // Variable para la secuencia (1 a 4).
+                        // Se usa 'volatile' porque esta variable
+                        // se modifica dentro de una interrupción.
+                        // Esto evita que el compilador la optimice
+                        // por error.
+
+// --- MANEJADOR DE INTERRUPCIÓN ---
+// Recuerda: Este nombre debe estar en el archivo startup_gcc.c
+void Timer0A_Handler(void)
+{
+    // Limpiar la bandera de interrupción (Obligatorio)
+    // para que no se quede en un bucle infinito.
+    TimerIntClear(TIMER0_BASE, TIMER_TIMA_TIMEOUT);
+
+    s++;                // Incrementa el estado de la secuencia
+    if(s > 4) s = 1;    // Si pasa de 4, reinicia a 1 (tenemos 4 LEDs)
+
+    // Es crucial apagar todos los LEDs antes de mostrar 
+    // el siguiente estado. Si no lo hacemos, los LEDs
+    // se quedarían encendidos acumulándose.
+    // Apagamos los pines 0 y 1 del Puerto N.
+    GPIOPinWrite(GPIO_PORTN_BASE, (GPIO_PIN_0 | GPIO_PIN_1), 0);
+    // Apagamos los pines 0 y 4 del Puerto F.
+    GPIOPinWrite(GPIO_PORTF_BASE, (GPIO_PIN_0 | GPIO_PIN_4), 0);
+
+
+    // Dependiendo del valor de 's', encendemos un solo LED
+    switch(s)
+    {
+        // Enciende LED D1 (Puerto N, Pin 1)
+        case 1: GPIOPinWrite(GPIO_PORTN_BASE, GPIO_PIN_1, GPIO_PIN_1); break; 
+        
+        // Enciende LED D2 (Puerto N, Pin 0)
+        case 2: GPIOPinWrite(GPIO_PORTN_BASE, GPIO_PIN_0, GPIO_PIN_0); break; 
+        
+        // Enciende LED D3 (Puerto F, Pin 4)
+        case 3: GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_4, GPIO_PIN_4); break; 
+        
+        // Enciende LED D4 (Puerto F, Pin 0)
+        case 4: GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_0, GPIO_PIN_0); break; 
+    }
+}
+
+int main(void)
+{
+    // 1. Reloj a 120 MHz
+    // Configuramos el sistema y guardamos el valor devuelto 
+    // (120,000,000) en la variable 'tiempo'.
+    tiempo = SysCtlClockFreqSet((SYSCTL_XTAL_25MHZ | 
+                                 SYSCTL_OSC_MAIN | 
+                                 SYSCTL_USE_PLL | 
+                                 SYSCTL_CFG_VCO_240), 120000000);
+
+    // 2. Configurar Puertos N y F para los 4 LEDs
+    // Habilitamos el reloj para ambos puertos.
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_GPION);
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOF);
+    
+    // Esperamos a que los puertos estén listos para usarse.
+    while(!SysCtlPeripheralReady(SYSCTL_PERIPH_GPION));
+    while(!SysCtlPeripheralReady(SYSCTL_PERIPH_GPIOF));
+    
+    // Configuramos los pines como salidas. 
+    // D1 y D2 están en el Puerto N.
+    GPIOPinTypeGPIOOutput(GPIO_PORTN_BASE, GPIO_PIN_0 | GPIO_PIN_1); 
+    // D3 y D4 están en el Puerto F.
+    GPIOPinTypeGPIOOutput(GPIO_PORTF_BASE, GPIO_PIN_0 | GPIO_PIN_4); 
+
+    // 3. Configurar Timer 0
+    // Habilitamos el reloj del temporizador.
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_TIMER0);
+    while(!SysCtlPeripheralReady(SYSCTL_PERIPH_TIMER0));
+    
+    // Modo periódico: cuenta hacia abajo y se reinicia solo.
+    TimerConfigure(TIMER0_BASE, TIMER_CFG_PERIODIC);
+
+    // 4. Carga de Tiempo: 2 SEGUNDOS
+    // Si 'tiempo' es 1 segundo, '(tiempo * 2) - 1' son 2 segundos.
+    TimerLoadSet(TIMER0_BASE, TIMER_A, (tiempo * 2) - 1); 
+
+    // 5. Configurar Interrupciones
+    // Avisar cuando el timer llegue a cero.
+    TimerIntEnable(TIMER0_BASE, TIMER_TIMA_TIMEOUT);
+    // Permitir que el procesador escuche al Timer0A.
+    IntEnable(INT_TIMER0A); 
+    // Habilitar interrupciones a nivel global.
+    IntMasterEnable();      
+
+    // 6. Iniciar el Timer
+    TimerEnable(TIMER0_BASE, TIMER_A);
+
+    // Bucle infinito: el programa se queda aquí.
+    // Toda la acción ocurre en la interrupción en segundo plano.
+    while(1)
+    {
+
+    }
+}
+
+/*
+ * ==============================================================================
+ * 2. RESUMEN POR SECCIONES
+ * ==============================================================================
+ * - SECCIÓN 1 (Reloj): Se configura la Tiva a 120 MHz y se guarda el valor 
+ * en 'tiempo' para cálculos futuros.
+ * - SECCIÓN 2 (GPIO): Se habilitan los puertos N y F, que controlan los 4 
+ * LEDs integrados en la placa, configurándolos como salidas.
+ * - SECCIÓN 3 y 4 (Timer): Se activa el Timer 0 en modo periódico y se 
+ * le carga un valor equivalente a 2 segundos (tiempo * 2).
+ * - SECCIÓN 5 (Interrupción y Bucle): Se activan las interrupciones 
+ * y el programa entra en un bucle infinito inactivo.
+ * - SECCIÓN 6 (Rutina de Interrupción): Cada 2 segundos, se apagan todos 
+ * los LEDs, se incrementa un contador y se enciende el LED correspondiente.
+ * * ==============================================================================
+ * 3. FUNCIONAMIENTO GENERAL
+ * ==============================================================================
+ * El microcontrolador inicia, configura los pines de los LEDs, ajusta el 
+ * reloj del sistema a 120 MHz e inicia un temporizador. A partir de ahí, el 
+ * hilo principal del programa no hace nada (while(1)). Sin embargo, cada vez 
+ * que transcurren 2 segundos exactos, el hardware interrumpe el bucle, salta 
+ * a "Timer0A_Handler", avanza un paso en la secuencia (1->2->3->4), enciende 
+ * el LED que toca, apaga los demás y vuelve al bucle infinito a esperar otros 
+ * 2 segundos.
+ * * ==============================================================================
+ * 4. LO MÁS IMPORTANTE DEL CÓDIGO
+ * ==============================================================================
+ * A) El uso de la palabra reservada `volatile` en la variable `s`. En sistemas 
+ * embebidos, si una variable cambia su valor de "forma invisible" para el 
+ * flujo principal (es decir, dentro de una interrupción), debes declararla 
+ * como volatile. De lo contrario, el compilador podría ignorar sus cambios.
+ * B) Apagar todos los pines (escribir '0') ANTES del bloque `switch`. Es la 
+ * forma más limpia y segura de garantizar que no queden dos LEDs encendidos 
+ * al mismo tiempo.
+ * C) El cálculo `(tiempo * 2) - 1`. Dado que la función del reloj devuelve 
+ * los ciclos por segundo, multiplicarlo por 2 te da exactamente el tiempo 
+ * requerido sin usar bloqueos o retardos (delays) que pausen el procesador.
+ * ==============================================================================
+ */

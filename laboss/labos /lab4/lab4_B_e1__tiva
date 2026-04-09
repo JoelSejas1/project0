@@ -1,0 +1,111 @@
+#include <stdint.h>             // Tipos de datos estándar (uint32_t, etc.)
+#include <stdbool.h>            // Soporte para booleanos (true/false)
+#include "inc/hw_memmap.h"      // Mapa de memoria de los periféricos
+#include "driverlib/sysctl.h"   // Control del sistema y reloj
+#include "driverlib/gpio.h"     // Control de puertos de entrada/salida
+#include "driverlib/timer.h"    // Control de los temporizadores
+#include "driverlib/interrupt.h"// Control de interrupciones
+#include "inc/hw_ints.h"        // Definición de interrupciones del hardware
+
+// Variable para guardar la frecuencia del reloj
+int tiempo;                     // Almacenará los "ticks" equivalentes a 1 segundo
+
+// --- MANEJADOR DE INTERRUPCIÓN ---
+// Este nombre debe estar declarado exactamente igual en el archivo startup_gcc.c [cite: 162]
+void Timer0A_Handler(void)      
+{
+    // 1. Limpiar la interrupción (Obligatorio)
+    TimerIntClear(TIMER0_BASE, TIMER_TIMA_TIMEOUT); // Avisa al hardware que ya atendimos la interrupción 
+
+    // 2. Leer el estado actual del LED PN1 y conmutarlo (Toggle)
+    if(GPIOPinRead(GPIO_PORTN_BASE, GPIO_PIN_1))    // Si el LED está ENCENDIDO...
+    {
+        GPIOPinWrite(GPIO_PORTN_BASE, GPIO_PIN_1, 0); // ... lo APAGA.
+    }
+    else                                            // Si el LED está APAGADO...
+    {
+        GPIOPinWrite(GPIO_PORTN_BASE, GPIO_PIN_1, GPIO_PIN_1); // ... lo ENCIENDE.
+    }
+}
+
+int main(void)
+{
+    // 1. Configurar reloj a 120 MHz
+    tiempo = SysCtlClockFreqSet((SYSCTL_XTAL_25MHZ |  // Usa cristal de 25MHz
+                                 SYSCTL_OSC_MAIN |    // Usa oscilador principal
+                                 SYSCTL_USE_PLL |     // Usa el multiplicador PLL
+                                 SYSCTL_CFG_VCO_240), // Configura VCO a 240MHz
+                                 120000000);          // Establece reloj final a 120MHz. Retorna 120,000,000.
+
+    // 2. Configurar el Puerto N (LED D1 es PN1)
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_GPION);      // Enciende el reloj para el Puerto N
+    while(!SysCtlPeripheralReady(SYSCTL_PERIPH_GPION)); // Espera a que el puerto esté listo
+    GPIOPinTypeGPIOOutput(GPIO_PORTN_BASE, GPIO_PIN_1); // Configura el Pin 1 del Puerto N como salida
+
+    // 3. Configurar Timer 0 
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_TIMER0);     // Enciende el reloj para el Timer 0 [cite: 112, 113]
+    while(!SysCtlPeripheralReady(SYSCTL_PERIPH_TIMER0)); // Espera a que el Timer esté listo
+    
+    TimerConfigure(TIMER0_BASE, TIMER_CFG_PERIODIC);  // Configura el Timer para que se reinicie automáticamente 
+
+    // 4. Cargar el valor del tiempo 
+    // Caso A: 1 segundo  -> tiempo
+    // Caso B: 2 segundos -> tiempo * 2
+    // Caso C: 5 segundos -> tiempo * 5
+    TimerLoadSet(TIMER0_BASE, TIMER_A, tiempo - 1);   // Carga el temporizador con 120,000,000 ticks (1 segundo) 
+
+    // 5. Configurar Interrupciones
+    TimerIntEnable(TIMER0_BASE, TIMER_TIMA_TIMEOUT);  // Habilita la interrupción del Timer al llegar a cero [cite: 126]
+    IntEnable(INT_TIMER0A);                           // Habilita la interrupción específica del Timer0A en el procesador [cite: 123, 124]
+    IntMasterEnable();                                // Habilita las interrupciones globales [cite: 121, 122]
+
+    // 6. Iniciar el Timer
+    TimerEnable(TIMER0_BASE, TIMER_A);                // Arranca el conteo del Timer 
+
+    while(1)                                          // Bucle infinito. El procesador se queda aquí "descansando"
+    {
+    }
+}
+
+
+/*
+
+2. Resumen por Secciones
+
+    Sección 1: Configuración Inicial (Reloj y Periféricos): El microcontrolador ajusta su "corazón" para latir a 120 millones de
+     veces por segundo (120 MHz). La función guarda este número en la variable tiempo. Luego, se habilita el Puerto N y se 
+     configura el pin específico del LED como una salida de voltaje.
+
+    Sección 2: Configuración del Temporizador (Timer 0): Se enciende el módulo del temporizador y se configura en modo 
+    TIMER_CFG_PERIODIC, lo que significa que contará regresivamente de forma continua, reiniciándose cada vez que llegue
+     a cero. Se carga con el valor tiempo - 1 (que equivale a 1 segundo exacto de conteo).
+
+    Sección 3: Activación de Interrupciones: Se configuran tres niveles de permisos: se le dice al temporizador que avise
+     cuando termine de contar (TimerIntEnable), se le permite al procesador escuchar a este temporizador específico (IntEnable), 
+     y se activan las orejas globales del microcontrolador (IntMasterEnable). Finalmente, se enciende el temporizador.
+
+    Sección 4: La Interrupción (Timer0A_Handler): Es una subrutina que se ejecuta automáticamente cada vez que el temporizador 
+    llega a cero. Su trabajo es apagar la alarma del temporizador (TimerIntClear) y cambiar el estado del LED (si está apagado, 
+    lo enciende; si está encendido, lo apaga).
+
+3. Funcionamiento General
+
+El programa principal configura todo el hardware y luego entra en un bucle infinito while(1) donde no hace absolutamente nada.
+ Sin embargo, en segundo plano, el hardware del temporizador está contando desde 119,999,999 hasta 0. Cada vez que llega a 0 
+ (exactamente cada 1 segundo), el hardware detiene momentáneamente el bucle while(1), salta a ejecutar el código dentro de 
+ Timer0A_Handler para cambiar el estado del LED, y luego regresa al bucle infinito hasta que pase otro segundo.
+4. Lo más importante del código
+
+    Limpiar la Bandera (TimerIntClear): La línea TimerIntClear(TIMER0_BASE, TIMER_TIMA_TIMEOUT); dentro de la interrupción 
+    es crítica. Si olvidas esta línea, el microcontrolador creerá que la interrupción no ha sido atendida y se quedará atascado 
+    ejecutando la interrupción en un bucle infinito, "congelando" tu programa.
+
+    El archivo startup_gcc.c: El nombre de la función Timer0A_Handler (o timer0A_handler dependiendo de cómo lo hayas escrito en 
+    tu archivo de inicio) debe estar explícitamente registrado en la tabla de vectores de interrupción de tu proyecto para que el
+     hardware sepa adónde saltar cuando el temporizador termine.
+
+    El cálculo del tiempo: Usar la variable devuelta por SysCtlClockFreqSet es una excelente práctica. Te asegura que, sin importar 
+    a qué velocidad configures el reloj del sistema, esa variable siempre contendrá la cantidad exacta de "ticks" que conforman un 
+    segundo.
+
+*/

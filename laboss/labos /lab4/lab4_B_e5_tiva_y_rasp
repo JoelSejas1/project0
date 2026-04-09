@@ -1,0 +1,135 @@
+/*
+ * ==============================================================================
+ * ENUNCIADO DEL EJERCICIO:
+ * For the following exercise you will generate a 3-state sequence with 
+ * TIVA's user LEDs[cite: 174]. This sequence must work using one timer and using SSH 
+ * you must be able to change the second the timer works[cite: 175].
+ * - Create a 3-state sequence in TIVA. Implement the sequence in a Timer[cite: 177].
+ * - Using SSH change the seconds the timer takes to generate the sequence[cite: 178].
+ * ==============================================================================
+ */
+
+#include <stdint.h>
+#include <stdbool.h>
+#include "inc/hw_ints.h"
+#include "inc/hw_memmap.h"
+// Este archivo config.h es la clave para la integración con SSH.
+// Un script externo puede modificar este archivo para cambiar valores.
+#include "config.h" 
+#include "driverlib/sysctl.h"
+#include "driverlib/gpio.h"
+#include "driverlib/timer.h"
+#include "driverlib/interrupt.h"
+
+// Definición condicional: Si el script SSH no definió VELOCIDAD 
+// dentro de config.h, el programa usará 1.0 por defecto.
+#ifndef VELOCIDAD
+#define VELOCIDAD 1.0
+#endif
+
+uint32_t tiempo;
+volatile uint8_t s = 0; // Controla los 3 estados (1 a 3)
+
+// --- HANDLER: SECUENCIA DE 3 ESTADOS ---
+void Timer0A_Handler(void)
+{
+    // Limpiar bandera de interrupción del timer.
+    TimerIntClear(TIMER0_BASE, TIMER_TIMA_TIMEOUT);
+
+    s++;
+    if(s > 3) s = 1; // Secuencia de solo 3 estados
+
+    // Apagar EXCLUSIVAMENTE los LEDs involucrados antes de cambiar.
+    // Esto es más eficiente que apagar todo el puerto.
+    // Apaga D1 y D2 (Puerto N)
+    GPIOPinWrite(GPIO_PORTN_BASE, GPIO_PIN_0 | GPIO_PIN_1, 0);
+    // Apaga D3 (Puerto F)
+    GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_4, 0);
+
+    // Secuencia de 3 estados
+    switch(s)
+    {
+        // Enciende LED D1 (PN1)
+        case 1: GPIOPinWrite(GPIO_PORTN_BASE, GPIO_PIN_1, GPIO_PIN_1); break; 
+        // Enciende LED D2 (PN0)
+        case 2: GPIOPinWrite(GPIO_PORTN_BASE, GPIO_PIN_0, GPIO_PIN_0); break; 
+        // Enciende LED D3 (PF4)
+        case 3: GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_4, GPIO_PIN_4); break; 
+    }
+}
+
+int main(void)
+{
+    // 1. Reloj a 120 MHz
+    tiempo = SysCtlClockFreqSet((SYSCTL_XTAL_25MHZ | SYSCTL_OSC_MAIN | 
+                                 SYSCTL_USE_PLL | SYSCTL_CFG_VCO_240), 120000000);
+
+    // 2. Configurar pines de los 3 LEDs (D1, D2 y D3)
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_GPION);
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOF);
+    
+    GPIOPinTypeGPIOOutput(GPIO_PORTN_BASE, GPIO_PIN_0 | GPIO_PIN_1); // D1, D2
+    GPIOPinTypeGPIOOutput(GPIO_PORTF_BASE, GPIO_PIN_4);              // D3
+
+    // 3. Configurar Timer 0
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_TIMER0);
+    TimerConfigure(TIMER0_BASE, TIMER_CFG_PERIODIC);
+
+    // --- ESTA LÍNEA ES LA QUE DEPENDE DEL SSH ---
+    // La macro VELOCIDAD define dinámicamente el tiempo de recarga.
+    // Si VELOCIDAD es 0.5, el tiempo será la mitad (más rápido).
+    TimerLoadSet(TIMER0_BASE, TIMER_A, tiempo * VELOCIDAD - 1); 
+
+    // 4. Interrupciones y arranque
+    TimerIntEnable(TIMER0_BASE, TIMER_TIMA_TIMEOUT);
+    IntEnable(INT_TIMER0A); 
+    IntMasterEnable();      
+    TimerEnable(TIMER0_BASE, TIMER_A);
+
+    while(1) 
+    {
+        // Bucle vacío. Todo el trabajo lo hace la interrupción.
+    }
+}
+
+/*
+ * ==============================================================================
+ * 2. RESUMEN POR SECCIONES
+ * ==============================================================================
+ * - SECCIÓN 1 (Directivas de preprocesador): Se incluye un archivo "config.h" 
+ * y se define un valor por defecto para 'VELOCIDAD'. Esta es la interfaz 
+ * con el exterior (SSH).
+ * - SECCIÓN 2 (Reloj y GPIO): Se configura a 120 MHz y se habilitan 
+ * únicamente 3 LEDs para cumplir el requerimiento de los "3 estados".
+ * - SECCIÓN 3 (Timer Dinámico): El valor de carga del timer ya no es fijo 
+ * ni depende de un botón, sino que se calcula multiplicando los ticks del 
+ * reloj por la macro 'VELOCIDAD'.
+ * - SECCIÓN 4 (Rutina de Interrupción): Una máquina de 3 estados (switch/case) 
+ * que alterna encendiendo y apagando secuencialmente los 3 LEDs elegidos.
+ * ==============================================================================
+ * 3. FUNCIONAMIENTO GENERAL
+ * ==============================================================================
+ * Este programa C ejecuta una simple rotación de encendido entre 3 LEDs. La 
+ * "magia" ocurre antes de compilar. La idea es que te conectes por SSH a la 
+ * Raspberry o equipo de control, ejecutes un script (probablemente Python) 
+ * que modifique el archivo "config.h" o el propio archivo fuente cambiando 
+ * el valor de VELOCIDAD (ej. #define VELOCIDAD 2.5). Al recompilar y cargar 
+ * el código a la Tiva mediante ese mismo script SSH, la placa comenzará a 
+ * parpadear a la nueva velocidad sin haber tocado la lógica interna en C.
+ * ==============================================================================
+ * 4. LO MÁS IMPORTANTE DEL CÓDIGO
+ * ==============================================================================
+ * A) El uso de Macros e Includes para integrarse con scripts: Separar la 
+ * variable de configuración a un "config.h" es una técnica muy profesional. 
+ * Permite que un script externo manipule variables de C sin arriesgarse a 
+ * romper el código fuente principal.
+ * B) '#ifndef ... #endif': Esta guarda protectora garantiza que si el script 
+ * SSH falla al escribir la velocidad, el código C no se rompa al compilar, 
+ * cayendo de forma segura al valor predeterminado de 1.0.
+ * C) Aritmética Mixta (Flotante y Entero): Ojo con `tiempo * VELOCIDAD`. 
+ * Como VELOCIDAD es "1.0" (un flotante), el microcontrolador realizará una 
+ * multiplicación de coma flotante en tiempo de ejecución. Como ocurre una sola 
+ * vez en el `main` (antes del while), no afecta el rendimiento, pero es un 
+ * detalle técnico importante a tener en cuenta en sistemas embebidos.
+ * ==============================================================================
+ */
