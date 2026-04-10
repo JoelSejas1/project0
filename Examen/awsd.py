@@ -28,7 +28,7 @@ try:
     print("Puerto serial abierto correctamente.")
 except Exception as e:
     ser = None
-    print(f"Error abriendo serial (el botón no enviará datos): {e}")
+    print(f"Aviso - Sin serial (el botón no enviará datos): {e}")
 
 # Estado inicial
 velocidad = 50.0
@@ -68,13 +68,13 @@ print(f"Velocidad actual: {velocidad}%\r\n")
 old_settings = termios.tcgetattr(sys.stdin)
 
 try:
-    # Poner la terminal en modo lectura inmediata
+    # Poner la terminal en modo cbreak para lectura de teclas en tiempo real
     tty.setcbreak(sys.stdin.fileno())
     
     detener() # Iniciar completamente detenido
     
     while True:
-        # 1. Lógica de control por teclado
+        # 1. Lógica de control manual por teclado
         if es_tecla_presionada():
             tecla = sys.stdin.read(1).lower()
             
@@ -118,12 +118,12 @@ try:
                     nitro_estado = 0
                     sys.stdout.write(f"\rVelocidad Normal: {velocidad}%        ")
                 sys.stdout.flush()
-                # Actualizar inmediatamente la velocidad de los motores si se están moviendo
+                # Actualizar inmediatamente la velocidad de los motores
                 actualizar_pwm()
 
-        # 2. Lógica del botón (Comunicación a la Tiva)
+        # 2. Lógica de enviar el comando a Tiva con el botón físico
         if GPIO.input(boton) == GPIO.LOW:
-            sys.stdout.write("\rBoton presionado, enviando Tiva!")
+            sys.stdout.write("\rBoton presionado, enviando a Tiva!")
             sys.stdout.flush()
             if ser is not None:
                 ser.write(b'buzzer\n')
@@ -134,7 +134,7 @@ try:
 except KeyboardInterrupt:
     pass
 finally:
-    # Importante: Siempre restaurar la terminal a su estado normal al salir
+    # Restaurar la configuración de la consola
     termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
     detener()
     pwm_m1.stop()
